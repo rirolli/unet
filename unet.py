@@ -1,5 +1,4 @@
 import string
-from sys import last_type
 import torch
 import torch.nn as nn
 import torchvision.transforms as T
@@ -17,9 +16,9 @@ class DoubleConvolutionalLayer(nn.Module):
         if middle_channels is None:
             middle_channels = output_channels
 
-        self.conv1 = nn.Conv2d(in_channels=self.input_channels, out_channels=middle_channels, kernel_size=kernel_size, padding=padding, bias=bias)
+        self.conv1 = nn.Conv2d(in_channels=input_channels, out_channels=middle_channels, kernel_size=kernel_size, padding=padding, bias=bias)
         self.relu1 = nn.ReLU()
-        self.conv2 = nn.Conv2d(in_channels=middle_channels, out_channels=self.output_channels, kernel_size=kernel_size, padding=padding, bias=bias)
+        self.conv2 = nn.Conv2d(in_channels=middle_channels, out_channels=output_channels, kernel_size=kernel_size, padding=padding, bias=bias)
         self.relu2 = nn.ReLU()
 
     def forward(self, x):
@@ -158,13 +157,13 @@ class BlockFactory():
     def __init__(self) -> None:
         pass
 
-    def getEncoderBlock(self, input_channels:int, output_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> nn.Module:
+    def getEncoderBlock(self, input_channels:int, output_channels:int=None, middle_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> nn.Module:
         """Return an Encoder block."""
-        return EncoderBlock(input_channels, output_channels, b_dropout, p)
+        return EncoderBlock(input_channels, output_channels, middle_channels, b_dropout, p, is_last_block)
 
-    def getDecoderBlock(self, input_channels:int, output_channels:int=None, b_dropout=True, p=0.2) -> nn.Module:
+    def getDecoderBlock(self, input_channels:int, output_channels:int=None, middle_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> nn.Module:
         """Return a Decoder block."""
-        return DecoderBlock(input_channels, output_channels, b_dropout, p)
+        return DecoderBlock(input_channels, output_channels, middle_channels, b_dropout, p, is_last_block)
 
     def getBlock(self, block:string, input_channels:int, output_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> nn.Module:
         """
@@ -188,6 +187,7 @@ class BlockFactory():
 class UNet (nn.Module):
     
     def __init__(self, n_channels:int, n_classes:int) -> None:
+        super().__init__()
         # The number of the variables is the depth in the architecture.
 
         # initialization
@@ -209,7 +209,7 @@ class UNet (nn.Module):
         self.b_dec1 = block_factory.getDecoderBlock(input_channels=128) # output = 64 classes
 
         # 1x1 convolution
-        self.conv1x1 = nn.Conv2d(in_channels=64, out_channels=n_channels, kernel_size=1)
+        self.conv1x1 = nn.Conv2d(in_channels=64, out_channels=n_classes, kernel_size=1)
 
     def forward(self, x):
         x1 = self.b_enc1(x)
