@@ -1,4 +1,5 @@
 import string
+from sys import last_type
 import torch
 import torch.nn as nn
 import torchvision.transforms as T
@@ -46,35 +47,64 @@ class EncoderBlock(nn.Module):
         - p: probability of dropout
     """
 
-    def __init__(self, input_channels:int, output_channels:int, middle_channels:int=None, b_dropout=True, p=0.2) -> None:
+    def __init__(self, input_channels:int, output_channels:int=None, middle_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> None:
         super().__init__()
-        self.b_dropout = b_dropout
+
+        # defaults
         if middle_channels is None:
             middle_channels = output_channels
+        if b_dropout is None:
+            b_dropout = True
+        if p is None:
+            p=0.2
+        if is_last_block is None:
+            is_last_block = False
+        if output_channels is None:
+            output_channels = input_channels*2  # the number of output channels is duplicated
+
+        # initialize the variables
+        self.b_dropout = b_dropout
+        self.is_last_block = is_last_block
 
         # layer of the block
         self.d_conv = DoubleConvolutionalLayer(input_channels=input_channels, middle_channels=middle_channels, output_channels=output_channels)
-        self.mp = nn.MaxPool2d(kernel_size=2)
+        if not self.is_last_block:
+            self.mp = nn.MaxPool2d(kernel_size=2)
         if self.b_dropout:
             self.drop = nn.Dropout2d(p=p)
 
 
     def forward(self, x):
         x = self.d_conv(x)
-        x = self.mp(x)
+        if not self.is_last_block:
+            x = self.mp(x)
         if self.b_dropout:
             x = self.drop(x)
         return x
 
 class DecoderBlock(nn.Module):
 
-    def __init__(self, input_channels:int, output_channels:int, middle_channels:int=None, b_dropout=True, p=0.2, mode="upsample"):
+    def __init__(self, input_channels:int, output_channels:int=None, middle_channels:int=None, b_dropout=True, p=0.2, mode="upsample"):
         """
         This class r4etur a Decoder Block for the UNet.
 
         - mode: can be "upsample" or "convtranspose"
         """
         super().__init__()
+
+        # defaults
+        if output_channels is None:
+            output_channels = input_channels // 2
+        if middle_channels is None:
+            middle_channels = output_channels
+        if b_dropout is None:
+            b_dropout = True
+        if p is None:
+            p=0.2
+        if mode is None:
+            mode="upsample"
+
+        # initialize the variables
         self.b_dropout = b_dropout
         self.mode = mode
 
@@ -120,8 +150,6 @@ class DecoderBlock(nn.Module):
         return x
 
 
-        
-
 class BlockFactory():
     """
         This class is needed to create the blocks for the UNet. Allows decoupling between objects.
@@ -130,15 +158,15 @@ class BlockFactory():
     def __init__(self) -> None:
         pass
 
-    def getEncoderBlock(self, input_channels:int, output_channels:int, b_dropout=True, p=0.2) -> nn.Module:
+    def getEncoderBlock(self, input_channels:int, output_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> nn.Module:
         """Return an Encoder block."""
         return EncoderBlock(input_channels, output_channels, b_dropout, p)
 
-    def getDecoderBlock(self, input_channels:int, output_channels:int, b_dropout=True, p=0.2) -> nn.Module:
+    def getDecoderBlock(self, input_channels:int, output_channels:int=None, b_dropout=True, p=0.2) -> nn.Module:
         """Return a Decoder block."""
         return DecoderBlock(input_channels, output_channels, b_dropout, p)
 
-    def get(self, block:string, input_channels:int, output_channels:int, b_dropout=True, p=0.2) -> nn.Module:
+    def getBlock(self, block:string, input_channels:int, output_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> nn.Module:
         """
         Return a block for the UNet.
         Parameter:
@@ -149,7 +177,7 @@ class BlockFactory():
         - p: probability of dropout
         """
         if block=="encoder":
-            return self.getEncoderBlock(input_channels, output_channels, b_dropout, p)
+            return self.getEncoderBlock(input_channels, output_channels, b_dropout, p, is_last_block)
         elif block=="decoder":
             return self.getDecoderBlock(input_channels, output_channels, b_dropout, p)
         elif block is None:
@@ -157,6 +185,41 @@ class BlockFactory():
         else:
             raise Exception(f"Block type \"{block}\" is not valid.")
 
-class UNet:
-    # TO-DO
-    pass
+class UNet (nn.Module):
+    
+    def __init__(self, n_channels:int, n_classes:int) -> None:
+        # The number of the variables is the depth in the architecture.
+
+        # initialization
+        block_factory = BlockFactory()
+
+        # Encoder
+        self.b_enc1 = block_factory.getEncoderBlock(input_channels=n_channels, output_channels=64) # output = 64 classes
+        self.b_enc2 = block_factory.getEncoderBlock(input_channels=64) # output = 128 classes
+        self.b_enc3 = block_factory.getEncoderBlock(input_channels=128) # output = 256 classes
+        self.b_enc4 = block_factory.getEncoderBlock(input_channels=256) # output = 512 classes
+
+        # Intermediate
+        self.b_union = block_factory.getEncoderBlock(input_channels=512, is_last_block=True) # output = 1024 classes
+
+        # Decoder
+        self.b_dec4 = block_factory.getDecoderBlock(input_channels=1024) # output = 512 classes
+        self.b_dec3 = block_factory.getDecoderBlock(input_channels=512) # output = 256 classes
+        self.b_dec2 = block_factory.getDecoderBlock(input_channels=256) # output = 128 classes
+        self.b_dec1 = block_factory.getDecoderBlock(input_channels=128) # output = 64 classes
+
+        # 1x1 convolution
+        self.conv1x1 = nn.Conv2d(in_channels=64, out_channels=n_channels, kernel_size=1)
+
+    def forward(self, x):
+        x1 = self.b_enc1(x)
+        x2 = self.b_enc2(x1)
+        x3 = self.b_dec3(x2)
+        x4 = self.b_enc4(x3)
+        x = self.b_union(x4)
+        x = self.b_dec4(x4,x)
+        x = self.b_enc3(x3,x)
+        x = self.b_enc2(x2,x)
+        x = self.b_enc1(x1,x)
+        x = self.conv1x1(x)
+        return x
