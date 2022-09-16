@@ -50,6 +50,8 @@ class EncoderBlock(nn.Module):
         super().__init__()
 
         # defaults
+        if output_channels is None:
+            output_channels = input_channels*2  # the number of output channels is duplicated
         if middle_channels is None:
             middle_channels = output_channels
         if b_dropout is None:
@@ -58,8 +60,11 @@ class EncoderBlock(nn.Module):
             p=0.2
         if is_last_block is None:
             is_last_block = False
-        if output_channels is None:
-            output_channels = input_channels*2  # the number of output channels is duplicated
+
+        assert input_channels > 0 if input_channels is not None else False, "input_channels must be great than 0!"
+        assert output_channels > 0 if output_channels is not None else False, "output_channels must be great than 0!"
+        assert middle_channels > 0 if middle_channels is not None else False, "middle_channels must be great than 0!"
+        assert p >= 0 if p is not None else False, "p must be great or equals than 0!"
 
         # initialize the variables
         self.b_dropout = b_dropout
@@ -102,6 +107,12 @@ class DecoderBlock(nn.Module):
             p=0.2
         if mode is None:
             mode="upsample"
+
+        assert input_channels > 0 if input_channels is not None else False, "input_channels must be great than 0!"
+        assert output_channels > 0 if output_channels is not None else False, "output_channels must be great than 0!"
+        assert middle_channels > 0 if middle_channels is not None else False, "middle_channels must be great than 0!"
+        assert p >= 0 if p is not None else False, "p must be great or equals than 0!"
+        assert mode == "upsample" or mode == "convtranspose" if mode is not None else False, f"mode should be \"upsample\" or \"convtranspose\", not {mode}."
 
         # initialize the variables
         self.b_dropout = b_dropout
@@ -157,15 +168,15 @@ class BlockFactory():
     def __init__(self) -> None:
         pass
 
-    def getEncoderBlock(self, input_channels:int, output_channels:int=None, middle_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> nn.Module:
+    def _getEncoderBlock(self, input_channels:int, output_channels:int=None, middle_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> nn.Module:
         """Return an Encoder block."""
         return EncoderBlock(input_channels, output_channels, middle_channels, b_dropout, p, is_last_block)
 
-    def getDecoderBlock(self, input_channels:int, output_channels:int=None, middle_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> nn.Module:
+    def _getDecoderBlock(self, input_channels:int, output_channels:int=None, middle_channels:int=None, b_dropout=True, p=0.2, mode="upsample") -> nn.Module:
         """Return a Decoder block."""
-        return DecoderBlock(input_channels, output_channels, middle_channels, b_dropout, p, is_last_block)
+        return DecoderBlock(input_channels, output_channels, middle_channels, b_dropout, p, mode)
 
-    def getBlock(self, block:string, input_channels:int, output_channels:int=None, b_dropout=True, p=0.2, is_last_block=False) -> nn.Module:
+    def getBlock(self, block_name:string, input_channels:int, output_channels:int=None, middle_channels:int=None, b_dropout=True, p=0.2, mode="upsample", is_last_block=False) -> nn.Module:
         """
         Return a block for the UNet.
         Parameter:
@@ -175,38 +186,47 @@ class BlockFactory():
         - b_dropout: add the dropout layer (default = True)
         - p: probability of dropout
         """
-        if block=="encoder":
-            return self.getEncoderBlock(input_channels, output_channels, b_dropout, p, is_last_block)
-        elif block=="decoder":
-            return self.getDecoderBlock(input_channels, output_channels, b_dropout, p)
-        elif block is None:
-            raise Exception("Block type must be specified.")
+        if block_name=="encoder":
+            return self._getEncoderBlock(input_channels, output_channels, middle_channels, b_dropout, p, is_last_block)
+        elif block_name=="decoder":
+            return self._getDecoderBlock(input_channels, output_channels, middle_channels, b_dropout, p, mode)
+        elif block_name is None or block_name == "":
+            raise Exception("Block name must be specified.")
         else:
-            raise Exception(f"Block type \"{block}\" is not valid.")
+            raise Exception(f"Block type \"{block_name}\" is not valid.")
 
 class UNet (nn.Module):
     
     def __init__(self, n_channels:int, n_classes:int) -> None:
+        """
+        This class create a UNet network.
+        References: https://doi.org/10.48550/arXiv.1505.04597
+        """
         super().__init__()
+
         # The number of the variables is the depth in the architecture.
+
+        assert n_channels > 0, "n_channels must be greater than 0!"
+        assert n_classes > 0, "n_classes must be greater than 0!"
 
         # initialization
         block_factory = BlockFactory()
 
-        # Encoder
-        self.b_enc1 = block_factory.getEncoderBlock(input_channels=n_channels, output_channels=64) # output = 64 classes
-        self.b_enc2 = block_factory.getEncoderBlock(input_channels=64) # output = 128 classes
-        self.b_enc3 = block_factory.getEncoderBlock(input_channels=128) # output = 256 classes
-        self.b_enc4 = block_factory.getEncoderBlock(input_channels=256) # output = 512 classes
+        # Note that the output channels number is not specifiend in any layer because in a UNet is always doubled (in encoder) or halved (in decoder).
+        # ENCODER 
+        self.b_enc1 = block_factory.getBlock("encoder", input_channels=n_channels, output_channels=64) # output = 64 classes
+        self.b_enc2 = block_factory.getBlock("encoder", input_channels=64) # output = 128 classes
+        self.b_enc3 = block_factory.getBlock("encoder", input_channels=128) # output = 256 classes
+        self.b_enc4 = block_factory.getBlock("encoder", input_channels=256) # output = 512 classes
 
-        # Intermediate
-        self.b_union = block_factory.getEncoderBlock(input_channels=512, is_last_block=True) # output = 1024 classes
+        # INTERMEDIATE
+        self.b_union = block_factory.getBlock("encoder", input_channels=512, is_last_block=True) # output = 1024 classes
 
-        # Decoder
-        self.b_dec4 = block_factory.getDecoderBlock(input_channels=1024) # output = 512 classes
-        self.b_dec3 = block_factory.getDecoderBlock(input_channels=512) # output = 256 classes
-        self.b_dec2 = block_factory.getDecoderBlock(input_channels=256) # output = 128 classes
-        self.b_dec1 = block_factory.getDecoderBlock(input_channels=128) # output = 64 classes
+        # DECODER
+        self.b_dec4 = block_factory.getBlock("decoder", input_channels=1024) # output = 512 classes
+        self.b_dec3 = block_factory.getBlock("decoder", input_channels=512) # output = 256 classes
+        self.b_dec2 = block_factory.getBlock("decoder", input_channels=256) # output = 128 classes
+        self.b_dec1 = block_factory.getBlock("decoder", input_channels=128) # output = 64 classes
 
         # 1x1 convolution
         self.conv1x1 = nn.Conv2d(in_channels=64, out_channels=n_classes, kernel_size=1)
